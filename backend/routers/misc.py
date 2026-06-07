@@ -1,7 +1,9 @@
 """
 Misc routers: ads, stats, price calculator, users, file upload
 """
-import uuid, os, shutil
+import uuid, os
+import cloudinary
+import cloudinary.uploader
 from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from pydantic import BaseModel
@@ -15,42 +17,28 @@ from auth import get_current_user
 
 load_dotenv()
 
-UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", "./uploads"))
-UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+cloudinary.config(
+    cloud_name = os.getenv("CLOUDINARY_CLOUD_NAME"),
+    api_key    = os.getenv("CLOUDINARY_API_KEY"),
+    api_secret = os.getenv("CLOUDINARY_API_SECRET"),
+)
 
 # ── File upload ────────────────────────────────────────────────────────────────
 upload_router = APIRouter(tags=["upload"])
 
-
 @upload_router.post("/upload")
 async def upload_file(file: UploadFile = File(...), current: User = Depends(get_current_user)):
-    ext      = Path(file.filename).suffix.lower()
-    allowed  = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+    ext     = Path(file.filename).suffix.lower()
+    allowed = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
     if ext not in allowed:
         raise HTTPException(400, "Only image files allowed")
-
-    file_id  = str(uuid.uuid4())
-    filename = f"{file_id}{ext}"
-    dest     = UPLOAD_DIR / filename
-
-    with open(dest, "wb") as f:
-        shutil.copyfileobj(file.file, f)
-
-    return {"id": f"/api/files/{filename}"}
-
-
-@upload_router.get("/files/{filename}")
-async def serve_file(filename: str):
-    from fastapi.responses import FileResponse
-    path = UPLOAD_DIR / filename
-    if not path.exists():
-        raise HTTPException(404, "File not found")
-    return FileResponse(str(path))
+    contents = await file.read()
+    result   = cloudinary.uploader.upload(contents, folder="bookbridge")
+    return {"id": result["secure_url"]}
 
 
 # ── Ads ────────────────────────────────────────────────────────────────────────
 ads_router = APIRouter(prefix="/ads", tags=["ads"])
-
 
 class AdIn(BaseModel):
     title:       str
@@ -58,7 +46,6 @@ class AdIn(BaseModel):
     description: str | None = None
     image_url:   str | None = None
     link_url:    str | None = None
-
 
 def ad_out(a: Ad) -> dict:
     return {
@@ -72,7 +59,6 @@ def ad_out(a: Ad) -> dict:
         "created_at":  a.created_at.isoformat(),
     }
 
-
 @ads_router.get("/featured")
 async def featured_ad(db: AsyncSession = Depends(get_db)):
     result = await db.execute(
@@ -83,12 +69,10 @@ async def featured_ad(db: AsyncSession = Depends(get_db)):
         raise HTTPException(404, "No featured ad")
     return ad_out(ad)
 
-
 @ads_router.get("")
 async def list_ads(current: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Ad).where(Ad.author_id == current.id).order_by(Ad.created_at.desc()))
     return [ad_out(a) for a in result.scalars().all()]
-
 
 @ads_router.post("")
 async def create_ad(body: AdIn, current: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
@@ -109,7 +93,6 @@ async def create_ad(body: AdIn, current: User = Depends(get_current_user), db: A
 
 # ── Stats ──────────────────────────────────────────────────────────────────────
 stats_router = APIRouter(tags=["stats"])
-
 
 @stats_router.get("/stats")
 async def get_stats(db: AsyncSession = Depends(get_db)):
@@ -141,12 +124,10 @@ CONDITION_MULTIPLIERS = {
     "Poor":     0.20,
 }
 
-
 class PriceIn(BaseModel):
     mrp:        float
     condition:  str = "Good"
     age_years:  float = 0
-
 
 @price_router.post("/calculate")
 async def calculate_price(body: PriceIn):
@@ -162,7 +143,6 @@ async def calculate_price(body: PriceIn):
 
 # ── Users public profile ───────────────────────────────────────────────────────
 users_router = APIRouter(prefix="/users", tags=["users"])
-
 
 @users_router.get("/{user_id}")
 async def get_user(user_id: str, db: AsyncSession = Depends(get_db)):
@@ -181,7 +161,6 @@ async def get_user(user_id: str, db: AsyncSession = Depends(get_db)):
 
 # ── My books ───────────────────────────────────────────────────────────────────
 my_router = APIRouter(prefix="/my", tags=["my"])
-
 
 @my_router.get("/books")
 async def my_books(current: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
