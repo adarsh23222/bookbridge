@@ -6,23 +6,19 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
-
 from database import get_db
 from models import WallPost, WallComment, WallLike, User
 from auth import get_current_user, get_optional_user
 
 router = APIRouter(prefix="/wall", tags=["wall"])
 
-
 class PostIn(BaseModel):
     content:   str
     image_url: str | None = None
 
-
 class CommentIn(BaseModel):
     post_id: str
     content: str
-
 
 @router.get("/posts")
 async def get_posts(db: AsyncSession = Depends(get_db)):
@@ -32,10 +28,8 @@ async def get_posts(db: AsyncSession = Depends(get_db)):
         .order_by(WallPost.created_at.desc())
     )
     rows = await db.execute(stmt)
-
     out = []
     for post, author in rows.all():
-        # count likes & comments
         lc = await db.execute(select(func.count()).where(WallLike.post_id    == post.id))
         cc = await db.execute(select(func.count()).where(WallComment.post_id == post.id))
         out.append({
@@ -51,7 +45,6 @@ async def get_posts(db: AsyncSession = Depends(get_db)):
         })
     return out
 
-
 @router.post("/posts")
 async def create_post(body: PostIn, current: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     post = WallPost(
@@ -64,19 +57,27 @@ async def create_post(body: PostIn, current: User = Depends(get_current_user), d
     await db.flush()
     return {"id": post.id, "ok": True}
 
+@router.delete("/posts/{post_id}")
+async def delete_post(post_id: str, current: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
+    result = await db.execute(select(WallPost).where(WallPost.id == post_id))
+    post   = result.scalar_one_or_none()
+    if not post:
+        raise HTTPException(404, "Post not found")
+    if post.author_id != current.id and current.role != "admin":
+        raise HTTPException(403, "Forbidden")
+    await db.delete(post)
+    return {"ok": True}
 
 @router.post("/posts/{post_id}/like")
 async def toggle_like(post_id: str, current: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     res  = await db.execute(select(WallLike).where(WallLike.post_id == post_id, WallLike.user_id == current.id))
     like = res.scalar_one_or_none()
-
     if like:
         await db.delete(like)
         return {"liked": False}
     else:
         db.add(WallLike(id=str(uuid.uuid4()), post_id=post_id, user_id=current.id))
         return {"liked": True}
-
 
 @router.get("/posts/{post_id}/likes/me")
 async def my_like(post_id: str, current: User = Depends(get_optional_user), db: AsyncSession = Depends(get_db)):
@@ -85,7 +86,6 @@ async def my_like(post_id: str, current: User = Depends(get_optional_user), db: 
     res  = await db.execute(select(WallLike).where(WallLike.post_id == post_id, WallLike.user_id == current.id))
     like = res.scalar_one_or_none()
     return {"liked": bool(like)}
-
 
 @router.get("/posts/{post_id}/comments")
 async def get_comments(post_id: str, db: AsyncSession = Depends(get_db)):
@@ -105,7 +105,6 @@ async def get_comments(post_id: str, db: AsyncSession = Depends(get_db)):
         }
         for c, u in rows.all()
     ]
-
 
 @router.post("/comments")
 async def add_comment(body: CommentIn, current: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
